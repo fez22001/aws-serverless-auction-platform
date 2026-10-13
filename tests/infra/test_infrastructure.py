@@ -92,7 +92,7 @@ def test_bootstrap_oidc_and_artifact_write_once():
     r=infra.bootstrap()['Resources']
     trust=r['GitHubDeployRole']['Properties']['AssumeRolePolicyDocument']['Statement'][0]
     assert trust['Condition']['StringEquals']['token.actions.githubusercontent.com:aud']=='sts.amazonaws.com'
-    assert trust['Condition']['StringEquals']['token.actions.githubusercontent.com:sub']==infra.sub('repo:${GitHubRepository}:environment:${GitHubEnvironment}')
+    assert trust['Condition']['StringEquals']['token.actions.githubusercontent.com:sub']==infra.sub('${GitHubSubjectPrefix}:environment:${GitHubEnvironment}')
     deny=r['ArtifactsPolicy']['Properties']['PolicyDocument']['Statement'][1]
     assert deny['Condition']['Null']['s3:if-none-match']=='true'
     assert r['ApiLoggingAccount']['Condition']=='ManageLogging'
@@ -307,3 +307,11 @@ def test_every_public_api_requires_cognito_except_preflight(app):
     assert client['IdTokenValidity']==15
     for name in ['UserCreate','UserGetAll','AuctionCreate','AuctionGetOne','AuctionGetAll','BidGet']:
         assert r[name]['Properties']['Environment']['Variables']['REQUIRE_AUTH']=='true'
+
+
+def test_github_subject_requires_exact_repository_and_supports_immutable_ids(tmp_path,cfg):
+    cfg.update(github_repository='owner/repo',github_subject_prefix='repo:owner@123/repo@456')
+    path=tmp_path/'config.json';release.save(path,cfg);assert release.config(path)==cfg
+    for prefix in ['', 'repo:other@123/repo@456', 'repo:owner@123/repo@456:*']:
+        cfg['github_subject_prefix']=prefix;release.save(path,cfg)
+        with pytest.raises(ValueError):release.config(path)

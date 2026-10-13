@@ -11,5 +11,6 @@
   "github_environment": "dev",
   "existing_oidc_provider_arn": "",
   "manage_api_gateway_logging": false,
-  "reserve_lambda_concurrency": false
+  "reserve_lambda_concurrency": false,
+  "github_subject_prefix": ""
 }

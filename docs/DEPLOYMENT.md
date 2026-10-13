@@ -20,7 +20,7 @@ Bootstrap is operator-managed and cannot be updated by the GitHub deployment rol
 
 The `dev` environment must allow deployments only from `main`, require an owner review, and disallow administrator bypass. Its variables are `AWS_ROLE_ARN` (bootstrap output), `AWS_ACCOUNT_ID`, `PROJECT_PREFIX`, and `ALLOWED_API_CIDR`. Put `ALERT_EMAIL` in an **environment secret**, not in the source. Fork pull requests run offline CI with read-only permissions and receive no AWS identity.
 
-The AWS trust policy accepts only `repo:OWNER/REPO:environment:dev` with audience `sts.amazonaws.com`. Action versions are pinned to commit SHAs. The default GitHub token is read-only. No AWS access keys are stored in GitHub.
+Set `github_subject_prefix` to the exact `sub_claim_prefix` returned by `gh api repos/OWNER/REPO/actions/oidc/customization/sub`. New GitHub.com repositories use immutable owner/repository IDs, for example `repo:OWNER@123/REPO@456`. The AWS trust policy accepts only this exact prefix followed by `:environment:dev`, with audience `sts.amazonaws.com`. Do not remove the immutable IDs or use wildcards. Action versions are pinned to commit SHAs. The default GitHub token is read-only. No AWS access keys are stored in GitHub.
 
 ## Release
 
