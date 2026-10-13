@@ -71,6 +71,10 @@ def config(path):
     budget=c.get('monthly_budget_usd',10)
     if isinstance(budget,bool) or not isinstance(budget,(int,float)) or not 1<=budget<=100000: raise ValueError('monthly_budget_usd must be between 1 and 100000')
     if c.get('github_repository') and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',c['github_repository']): raise ValueError('GitHub repository must be owner/repo')
+    if c.get('github_repository'):
+        match=re.fullmatch(r'repo:([A-Za-z0-9_.-]+)(?:@[0-9]+)?/([A-Za-z0-9_.-]+)(?:@[0-9]+)?',c.get('github_subject_prefix',''))
+        if not match or '/'.join(match.groups()) != c['github_repository']:
+            raise ValueError('Set github_subject_prefix to the exact repository OIDC prefix from GitHub')
     return c
 
 
@@ -179,7 +183,7 @@ def plan(c,kind,folder,plan_path):
     common={'ProjectPrefix':c['project_prefix']}
     args={};validation={};rendered_sha=None
     if kind=='bootstrap':
-        params={**common,'GitHubRepository':c.get('github_repository',''),'GitHubEnvironment':c.get('github_environment','dev'),'ExistingOidcProviderArn':c.get('existing_oidc_provider_arn',''),'ManageApiGatewayLogging':str(c['manage_api_gateway_logging']).lower(),'BudgetEmail':c.get('alert_email',''),'MonthlyBudgetUsd':str(c.get('monthly_budget_usd',10))}
+        params={**common,'GitHubRepository':c.get('github_repository',''),'GitHubSubjectPrefix':c.get('github_subject_prefix',''),'GitHubEnvironment':c.get('github_environment','dev'),'ExistingOidcProviderArn':c.get('existing_oidc_provider_arn',''),'ManageApiGatewayLogging':str(c['manage_api_gateway_logging']).lower(),'BudgetEmail':c.get('alert_email',''),'MonthlyBudgetUsd':str(c.get('monthly_budget_usd',10))}
         args['TemplateBody']=json.dumps(template)
     else:
         boot=describe_stack(cf,stack_name(c,'bootstrap'))

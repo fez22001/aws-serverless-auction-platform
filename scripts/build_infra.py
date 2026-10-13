@@ -38,6 +38,7 @@ def bootstrap():
     t=base('Auction recovery: operator-managed deployment identity and artifact storage. No application data.')
     p=t['Parameters']; r=t['Resources']
     p.update({'GitHubRepository':param('', AllowedPattern='(^$|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$)'),
+              'GitHubSubjectPrefix':param('', AllowedPattern=r'(^$|repo:[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?)'),
               'GitHubEnvironment':param('dev', AllowedPattern='[A-Za-z0-9_-]+'),
               'ExistingOidcProviderArn':param(''),
               'BudgetEmail':param(''), 'MonthlyBudgetUsd':{'Type':'Number','Default':10,'MinValue':1},
@@ -103,7 +104,7 @@ def bootstrap():
     r['GitHubDeployRole']={**resource('IAM::Role',RoleName=sub('${ProjectPrefix}-github-deploy'),MaxSessionDuration=3600,
         AssumeRolePolicyDocument=policy({'Effect':'Allow','Principal':{'Federated':oidc},'Action':'sts:AssumeRoleWithWebIdentity',
             'Condition':{'StringEquals':{'token.actions.githubusercontent.com:aud':'sts.amazonaws.com',
-                 'token.actions.githubusercontent.com:sub':sub('repo:${GitHubRepository}:environment:${GitHubEnvironment}')}}}),
+                 'token.actions.githubusercontent.com:sub':sub('${GitHubSubjectPrefix}:environment:${GitHubEnvironment}')}}}),
         Policies=[{'PolicyName':'ReviewAndDeploy','PolicyDocument':policy(
             allow(['cloudformation:CreateChangeSet','cloudformation:DescribeChangeSet','cloudformation:ExecuteChangeSet','cloudformation:DeleteChangeSet','cloudformation:DescribeStacks','cloudformation:DescribeStackEvents','cloudformation:GetTemplate'],[
                 sub('arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectPrefix}-app/*'),sub('arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${ProjectPrefix}-review-*/*')]),

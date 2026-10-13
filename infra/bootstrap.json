@@ -12,6 +12,11 @@
       "Default": "",
       "AllowedPattern": "(^$|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$)"
     },
+    "GitHubSubjectPrefix": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "(^$|repo:[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?)"
+    },
     "GitHubEnvironment": {
       "Type": "String",
       "Default": "dev",
@@ -670,7 +675,7 @@
                 "StringEquals": {
                   "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                   "token.actions.githubusercontent.com:sub": {
-                    "Fn::Sub": "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+                    "Fn::Sub": "${GitHubSubjectPrefix}:environment:${GitHubEnvironment}"
                   }
                 }
               }
