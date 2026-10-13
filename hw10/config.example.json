@@ -1,0 +1,24 @@
+{
+  "description": "Reference schema only. Stage D CloudFormation wires these values automatically; deployment uses infra/deploy.local.json and stack outputs. No credentials belong here.",
+  "workflowDefinitionSubstitutions": {
+    "UsersTable": "auction-dev-users",
+    "AuctionsTable": "auction-dev-auctions",
+    "BidsTable": "auction-dev-bids",
+    "RequestsTable": "auction-dev-requests",
+    "OutboxTable": "auction-dev-outbox",
+    "HighBidTopicArn": "<SNS topic ARN from the new stack>"
+  },
+  "apiGatewayStageVariables": {
+    "BiddingStateMachineArn": "<Bidding EXPRESS state machine ARN>",
+    "CloseAuctionStateMachineArn": "<CloseAuction EXPRESS state machine ARN>"
+  },
+  "lambdaEnvironment": {
+    "USERS_TABLE": "auction-dev-users",
+    "AUCTIONS_TABLE": "auction-dev-auctions",
+    "BIDS_TABLE": "auction-dev-bids",
+    "OUTBOX_TABLE": "auction-dev-outbox",
+    "HIGH_BID_TOPIC_ARN": "<same SNS topic ARN as HighBidTopicArn>",
+    "ALLOWED_ORIGIN": "http://127.0.0.1:5173",
+    "MAX_PUBLISH_PER_RUN": "100"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "expected_account_id": "REPLACE_WITH_NEW_12_DIGIT_ACCOUNT",
+  "region": "us-east-1",
+  "profile": "auction-dev",
+  "project_prefix": "auction-dev",
+  "allowed_api_cidr": "0.0.0.0/0",
+  "alert_email": "",
+  "monthly_budget_usd": 10,
+  "point_in_time_recovery": true,
+  "github_repository": "",
+  "github_environment": "dev",
+  "existing_oidc_provider_arn": "",
+  "manage_api_gateway_logging": false,
+  "reserve_lambda_concurrency": false
+}

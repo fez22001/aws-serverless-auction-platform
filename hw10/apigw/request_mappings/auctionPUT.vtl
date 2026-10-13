@@ -1,0 +1,8 @@
+#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll("\\'","'"))
+#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll("\\'","'"))
+#set($uid = $context.authorizer.claims.sub)
+#set($payload = "{\"auctionId\":\"$aid\",\"requestId\":\"$rid\",\"_principal\":\"$uid\"}")
+{
+  "stateMachineArn": "$stageVariables.CloseAuctionStateMachineArn",
+  "input": "$util.escapeJavaScript($payload).replaceAll("\\'","'")"
+}

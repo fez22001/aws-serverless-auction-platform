@@ -1,0 +1,13 @@
+**/node_modules/
+**/__pycache__/
+**/.DS_Store
+.venv/
+.tools/
+.local/
+.pytest_cache/
+infra/deploy.local.json
+**/.env
+**/.env.local
+**/dist/
+**/*.tsbuildinfo
+*.log

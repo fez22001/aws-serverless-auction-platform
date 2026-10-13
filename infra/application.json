@@ -1,0 +1,4461 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Auction recovery schema v2: authenticated invitation-only demo, API, atomic Express workflows and durable notification outbox.",
+  "Parameters": {
+    "ProjectPrefix": {
+      "Type": "String",
+      "Default": "auction-dev",
+      "AllowedPattern": "[a-z][a-z0-9-]{2,24}"
+    },
+    "ArtifactBucket": {
+      "Type": "String"
+    },
+    "ArtifactPrefix": {
+      "Type": "String",
+      "AllowedPattern": "releases/[a-f0-9]{64}"
+    },
+    "RuntimeBoundaryArn": {
+      "Type": "String"
+    },
+    "AllowedApiCidr": {
+      "Type": "String",
+      "AllowedPattern": "(\\d{1,3}\\.){3}\\d{1,3}/(32|0)",
+      "Description": "0.0.0.0/0 for the authenticated public demo; /32 for restricted staging."
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "Default": ""
+    },
+    "PointInTimeRecovery": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "ReserveLambdaConcurrency": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Description": "Disable for new accounts whose concurrency quota cannot leave 100 unreserved executions."
+    }
+  },
+  "Resources": {
+    "UsersTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectPrefix}-users"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "userId",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "userId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": {
+            "Fn::If": [
+              "Pitr",
+              true,
+              false
+            ]
+          }
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectPrefix"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "AuctionsTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectPrefix}-auctions"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "auctionId",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "auctionId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": {
+            "Fn::If": [
+              "Pitr",
+              true,
+              false
+            ]
+          }
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectPrefix"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "BidsTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectPrefix}-bids"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "auctionId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "bidAmt",
+            "AttributeType": "N"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "auctionId",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "bidAmt",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": {
+            "Fn::If": [
+              "Pitr",
+              true,
+              false
+            ]
+          }
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectPrefix"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "RequestsTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectPrefix}-requests"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "requestKey",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "requestKey",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": {
+            "Fn::If": [
+              "Pitr",
+              true,
+              false
+            ]
+          }
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectPrefix"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "OutboxTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectPrefix}-outbox"
+        },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "eventId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "deliveryStatus",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "createdAt",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "eventId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": {
+            "Fn::If": [
+              "Pitr",
+              true,
+              false
+            ]
+          }
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectPrefix"
+            }
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "pending-by-date",
+            "KeySchema": [
+              {
+                "AttributeName": "deliveryStatus",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "HighBidTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "${ProjectPrefix}-high-bid"
+        }
+      }
+    },
+    "Alerts": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "${ProjectPrefix}-alerts"
+        }
+      }
+    },
+    "AlertSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "Alerts"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "AlertEmail"
+        }
+      },
+      "Condition": "EmailAlerts"
+    },
+    "Notifications": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": {
+          "Fn::Sub": "${ProjectPrefix}-notifications"
+        },
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "VisibilityTimeout": 60
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "NotificationDlq": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": {
+          "Fn::Sub": "${ProjectPrefix}-notification-dlq"
+        },
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "VisibilityTimeout": 60
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ReplayDlq": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": {
+          "Fn::Sub": "${ProjectPrefix}-replay-dlq"
+        },
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "VisibilityTimeout": 60
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "NotificationQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [
+          {
+            "Ref": "Notifications"
+          },
+          {
+            "Ref": "NotificationDlq"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sqs:SendMessage",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "Notifications",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::GetAtt": [
+                    "NotificationDlq",
+                    "Arn"
+                  ]
+                }
+              ],
+              "Principal": {
+                "Service": "sns.amazonaws.com"
+              },
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Ref": "HighBidTopic"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "NotificationSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "HighBidTopic"
+        },
+        "Protocol": "sqs",
+        "Endpoint": {
+          "Fn::GetAtt": [
+            "Notifications",
+            "Arn"
+          ]
+        },
+        "RawMessageDelivery": true,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "NotificationDlq",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "DependsOn": "NotificationQueuePolicy"
+    },
+    "WebBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "${ProjectPrefix}-web-${AWS::AccountId}-${AWS::Region}"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        }
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "WebOac": {
+      "Type": "AWS::CloudFront::OriginAccessControl",
+      "Properties": {
+        "OriginAccessControlConfig": {
+          "Name": {
+            "Fn::Sub": "${ProjectPrefix}-web"
+          },
+          "OriginAccessControlOriginType": "s3",
+          "SigningBehavior": "always",
+          "SigningProtocol": "sigv4"
+        }
+      }
+    },
+    "SpaRouter": {
+      "Type": "AWS::CloudFront::Function",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectPrefix}-spa"
+        },
+        "AutoPublish": true,
+        "FunctionConfig": {
+          "Comment": "Rewrite only known client routes, never missing assets.",
+          "Runtime": "cloudfront-js-2.0"
+        },
+        "FunctionCode": "function handler(event) { var r=event.request; if (/^\\/(?:users|auctions|help|callback)?\\/?$/.test(r.uri) || /^\\/bidding\\/[^/]+\\/?$/.test(r.uri)) r.uri='/index.html'; return r; }"
+      }
+    },
+    "WebCache": {
+      "Type": "AWS::CloudFront::CachePolicy",
+      "Properties": {
+        "CachePolicyConfig": {
+          "Name": {
+            "Fn::Sub": "${ProjectPrefix}-web"
+          },
+          "MinTTL": 0,
+          "DefaultTTL": 300,
+          "MaxTTL": 31536000,
+          "ParametersInCacheKeyAndForwardedToOrigin": {
+            "EnableAcceptEncodingGzip": true,
+            "EnableAcceptEncodingBrotli": true,
+            "CookiesConfig": {
+              "CookieBehavior": "none"
+            },
+            "HeadersConfig": {
+              "HeaderBehavior": "none"
+            },
+            "QueryStringsConfig": {
+              "QueryStringBehavior": "none"
+            }
+          }
+        }
+      }
+    },
+    "WebHeaders": {
+      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+      "Properties": {
+        "ResponseHeadersPolicyConfig": {
+          "Name": {
+            "Fn::Sub": "${ProjectPrefix}-security"
+          },
+          "SecurityHeadersConfig": {
+            "ContentTypeOptions": {
+              "Override": true
+            },
+            "FrameOptions": {
+              "FrameOption": "DENY",
+              "Override": true
+            },
+            "StrictTransportSecurity": {
+              "AccessControlMaxAgeSec": 31536000,
+              "IncludeSubdomains": true,
+              "Override": true
+            },
+            "ReferrerPolicy": {
+              "ReferrerPolicy": "strict-origin-when-cross-origin",
+              "Override": true
+            }
+          }
+        }
+      }
+    },
+    "WebDistribution": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Enabled": true,
+          "DefaultRootObject": "index.html",
+          "HttpVersion": "http2",
+          "IPV6Enabled": true,
+          "PriceClass": "PriceClass_100",
+          "Origins": [
+            {
+              "Id": "private-s3",
+              "DomainName": {
+                "Fn::GetAtt": [
+                  "WebBucket",
+                  "RegionalDomainName"
+                ]
+              },
+              "S3OriginConfig": {
+                "OriginAccessIdentity": ""
+              },
+              "OriginAccessControlId": {
+                "Ref": "WebOac"
+              }
+            }
+          ],
+          "DefaultCacheBehavior": {
+            "TargetOriginId": "private-s3",
+            "ViewerProtocolPolicy": "redirect-to-https",
+            "AllowedMethods": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ],
+            "CachedMethods": [
+              "GET",
+              "HEAD"
+            ],
+            "Compress": true,
+            "CachePolicyId": {
+              "Ref": "WebCache"
+            },
+            "ResponseHeadersPolicyId": {
+              "Ref": "WebHeaders"
+            },
+            "FunctionAssociations": [
+              {
+                "EventType": "viewer-request",
+                "FunctionARN": {
+                  "Fn::GetAtt": [
+                    "SpaRouter",
+                    "FunctionARN"
+                  ]
+                }
+              }
+            ]
+          },
+          "ViewerCertificate": {
+            "CloudFrontDefaultCertificate": true
+          }
+        }
+      }
+    },
+    "WebPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "WebBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "WebBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${WebBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": {
+                "Fn::Sub": "${WebBucket.Arn}/*"
+              },
+              "Principal": {
+                "Service": "cloudfront.amazonaws.com"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "AWS:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "UserPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "Properties": {
+        "UserPoolName": {
+          "Fn::Sub": "${ProjectPrefix}-demo"
+        },
+        "UserPoolTier": "LITE",
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": true
+        },
+        "UsernameAttributes": [
+          "email"
+        ],
+        "AutoVerifiedAttributes": [
+          "email"
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 12,
+            "RequireLowercase": true,
+            "RequireUppercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "TemporaryPasswordValidityDays": 7
+          }
+        },
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        },
+        "UserPoolTags": {
+          "Project": {
+            "Ref": "ProjectPrefix"
+          }
+        },
+        "Schema": [
+          {
+            "Name": "email",
+            "AttributeDataType": "String",
+            "Required": true,
+            "Mutable": true
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "UserPoolClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "UserPool"
+        },
+        "ClientName": {
+          "Fn::Sub": "${ProjectPrefix}-web"
+        },
+        "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthScopes": [
+          "openid",
+          "email",
+          "profile"
+        ],
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "CallbackURLs": [
+          {
+            "Fn::Sub": "https://${WebDistribution.DomainName}/callback"
+          }
+        ],
+        "LogoutURLs": [
+          {
+            "Fn::Sub": "https://${WebDistribution.DomainName}/"
+          }
+        ],
+        "ExplicitAuthFlows": [
+          "ALLOW_REFRESH_TOKEN_AUTH",
+          "ALLOW_ADMIN_USER_PASSWORD_AUTH"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true,
+        "AccessTokenValidity": 15,
+        "IdTokenValidity": 15,
+        "RefreshTokenValidity": 1,
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "days"
+        }
+      }
+    },
+    "UserPoolDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "UserPool"
+        },
+        "Domain": {
+          "Fn::Sub": "${ProjectPrefix}-${AWS::AccountId}"
+        },
+        "ManagedLoginVersion": 1
+      }
+    },
+    "UserGetAllLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-user_get_all"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "UserGetAllRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-UserGetAllRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:Scan",
+                    "dynamodb:GetItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "UsersTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "UserGetAllLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UserGetAll": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-user_get_all"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "UserGetAllRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/user_get_all.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "USERS_TABLE": {
+              "Ref": "UsersTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "UserCreateLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-user_post_create"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "UserCreateRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-UserCreateRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:PutItem",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "UsersTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "UserCreateLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UserCreate": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-user_post_create"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "UserCreateRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/user_post_create.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "USERS_TABLE": {
+              "Ref": "UsersTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "AuctionGetAllLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-auction_get_all"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "AuctionGetAllRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-AuctionGetAllRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:Scan",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionsTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionGetAllLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "AuctionGetAll": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-auction_get_all"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "AuctionGetAllRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/auction_get_all.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "AUCTIONS_TABLE": {
+              "Ref": "AuctionsTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "AuctionGetOneLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-auction_get_one"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "AuctionGetOneRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-AuctionGetOneRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:GetItem",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionsTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionGetOneLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "AuctionGetOne": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-auction_get_one"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "AuctionGetOneRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/auction_get_one.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "AUCTIONS_TABLE": {
+              "Ref": "AuctionsTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "AuctionCreateLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-auction_post_create"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "AuctionCreateRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-AuctionCreateRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:PutItem",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionsTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionCreateLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "AuctionCreate": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-auction_post_create"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "AuctionCreateRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/auction_post_create.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "AUCTIONS_TABLE": {
+              "Ref": "AuctionsTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "BidGetLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-bid_get_for_auction"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "BidGetRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-BidGetRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:GetItem",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "AuctionsTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:Query",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "BidsTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "BidGetLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BidGet": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-bid_get_for_auction"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "BidGetRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 10,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/bid_get_for_auction.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "AUCTIONS_TABLE": {
+              "Ref": "AuctionsTable"
+            },
+            "BIDS_TABLE": {
+              "Ref": "BidsTable"
+            },
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "ReplayLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ProjectPrefix}-notification_replay"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ReplayRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-ReplayRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "OutboxTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:Query",
+                  "Resource": {
+                    "Fn::Sub": "${OutboxTable.Arn}/index/pending-by-date"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sns:Publish",
+                  "Resource": {
+                    "Ref": "HighBidTopic"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sqs:SendMessage",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ReplayDlq",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ReplayLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Replay": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectPrefix}-notification_replay"
+        },
+        "Runtime": "python3.13",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "ReplayRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 256,
+        "Timeout": 60,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "ReserveConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Fn::Sub": "${ArtifactPrefix}/notification_replay.zip"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "OUTBOX_TABLE": {
+              "Ref": "OutboxTable"
+            },
+            "HIGH_BID_TOPIC_ARN": {
+              "Ref": "HighBidTopic"
+            },
+            "MAX_PUBLISH_PER_RUN": "100",
+            "ALLOWED_ORIGIN": {
+              "Fn::Sub": "https://${WebDistribution.DomainName}"
+            },
+            "REQUIRE_AUTH": "true"
+          }
+        }
+      }
+    },
+    "BiddingLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/vendedlogs/states/${ProjectPrefix}-Bidding"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "BiddingRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-BiddingRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:GetItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "UsersTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "AuctionsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "RequestsTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:UpdateItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "AuctionsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OutboxTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:PutItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "RequestsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "BidsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OutboxTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogDelivery",
+                    "logs:GetLogDelivery",
+                    "logs:UpdateLogDelivery",
+                    "logs:DeleteLogDelivery",
+                    "logs:ListLogDeliveries",
+                    "logs:PutResourcePolicy",
+                    "logs:DescribeResourcePolicies",
+                    "logs:DescribeLogGroups"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:ConditionCheckItem",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "UsersTable",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sns:Publish",
+                  "Resource": {
+                    "Ref": "HighBidTopic"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Bidding": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": {
+          "Fn::Sub": "${ProjectPrefix}-Bidding"
+        },
+        "StateMachineType": "EXPRESS",
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "BiddingRole",
+            "Arn"
+          ]
+        },
+        "Definition": {
+          "Comment": "Stage C: schema v2, conditional transactions, durable success receipts; generated by scripts/build_workflows.py. Deploy as EXPRESS.",
+          "QueryLanguage": "JSONata",
+          "StartAt": "Validate",
+          "TimeoutSeconds": 25,
+          "States": {
+            "Validate": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% ($type($states.input.auctionId) = 'string' ? $exists($match($states.input.auctionId, /^[A-Za-z0-9_-]{1,64}$/)) : false) and ($exists($states.input.requestId) ? ($type($states.input.requestId) = 'string' ? $exists($match($states.input.requestId, /^[A-Za-z0-9_-]{1,128}$/)) : false) : true) and ($type($states.input.userId) = 'string' ? $exists($match($states.input.userId, /^[A-Za-z0-9_-]{1,64}$/)) : false) and ($type($states.input.bidAmt) = 'number' ? ($states.input.bidAmt > 0 and $states.input.bidAmt <= 1000000000 and $round($states.input.bidAmt, 2) = $states.input.bidAmt) : false) %}",
+                  "Next": "Initialize"
+                }
+              ],
+              "Default": "InvalidInput"
+            },
+            "Initialize": {
+              "Type": "Pass",
+              "Assign": {
+                "aid": "{% $states.input.auctionId %}",
+                "rid": "{% $exists($states.input.requestId) ? $states.input.requestId : $states.context.Execution.Id %}",
+                "principal": "{% $exists($states.input._principal) ? $states.input._principal : '' %}",
+                "attempt": 0,
+                "createdAt": "{% $now() %}",
+                "uid": "{% $states.input.userId %}",
+                "amount": "{% $states.input.bidAmt %}"
+              },
+              "Next": "MakeIdentity"
+            },
+            "MakeIdentity": {
+              "Type": "Pass",
+              "Assign": {
+                "requestKey": "{% 'BID#' & ($principal != '' ? $principal & '#' : '') & $rid %}",
+                "fingerprint": "{% $string({'auctionId':$aid,'userId':$uid,'bidAmt':$formatNumber($amount,'0.00')}) %}"
+              },
+              "Next": "ReadReceipt"
+            },
+            "ReadReceipt": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${RequestsTable}",
+                "Key": {
+                  "requestKey": {
+                    "S": "{% $requestKey %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "ReceiptExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "receipt": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "ReceiptExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($receipt.requestKey.S) %}",
+                  "Next": "MatchReceipt"
+                }
+              ],
+              "Default": "AttemptLimit"
+            },
+            "MatchReceipt": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $receipt.fingerprint.S = $fingerprint %}",
+                  "Next": "ReturnReceipt"
+                }
+              ],
+              "Default": "RequestConflict"
+            },
+            "ReturnReceipt": {
+              "Type": "Pass",
+              "End": true,
+              "Output": "{% $parse($receipt.response.S) %}"
+            },
+            "AttemptLimit": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $attempt >= 3 %}",
+                  "Next": "Unavailable"
+                }
+              ],
+              "Default": "ReadAuction"
+            },
+            "ReadAuction": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${AuctionsTable}",
+                "Key": {
+                  "auctionId": {
+                    "S": "{% $aid %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "AuctionExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "auction": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "AuctionExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($auction.auctionId.S) %}",
+                  "Next": "SchemaReady"
+                }
+              ],
+              "Default": "AuctionNotExist"
+            },
+            "SchemaReady": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $auction.schemaVersion.N = '2' and $exists($auction.version.N) and $exists($auction.highestBid.N) and $exists($auction.highestBidUserId.S) %}",
+                  "Next": "AuctionOpen"
+                }
+              ],
+              "Default": "MigrationRequired"
+            },
+            "AuctionOpen": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $auction.auctionStatus.S = 'OPEN' %}",
+                  "Next": "CheckBid"
+                }
+              ],
+              "Default": "AuctionClosed"
+            },
+            "ReadUser": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${UsersTable}",
+                "Key": {
+                  "userId": {
+                    "S": "{% $uid %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "UserExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "user": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "UserExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($user.userId.S) %}",
+                  "Next": "BalanceEnough"
+                }
+              ],
+              "Default": "InvalidUser"
+            },
+            "BalanceEnough": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $number($user.acctBalance.N) >= $amount %}",
+                  "Next": "PlanTransaction"
+                }
+              ],
+              "Default": "InsufficientFunds"
+            },
+            "WaitForConflict": {
+              "Type": "Wait",
+              "Seconds": 1,
+              "Next": "ReadReceipt"
+            },
+            "ReturnSuccess": {
+              "Type": "Pass",
+              "End": true,
+              "Output": "{% $response %}"
+            },
+            "InvalidInput": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "InvalidInput",
+                "message": "Valid auctionId, userId/bidAmt (for bids), and optional requestId are required",
+                "httpStatus": 400,
+                "retryable": false
+              }
+            },
+            "RequestConflict": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "IdempotencyConflict",
+                "message": "requestId was already committed with a different payload",
+                "httpStatus": 409,
+                "retryable": false
+              }
+            },
+            "MigrationRequired": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "MigrationRequired",
+                "message": "Auction requires an offline schema migration before writes are allowed",
+                "httpStatus": 409,
+                "retryable": false
+              }
+            },
+            "AuctionNotExist": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "AuctionNotExist",
+                "message": "Auction does not exist",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "AuctionClosed": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "AuctionClosed",
+                "message": "Auction is already closed",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "InvalidUser": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "invalid_user",
+                "message": "User does not exist",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "InsufficientFunds": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "insufficient_funds",
+                "message": "Insufficient funds",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "Unavailable": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "RetryableFailure",
+                "message": "Outcome may be unknown. Retry the identical request with the same requestId.",
+                "httpStatus": 503,
+                "retryable": true
+              }
+            },
+            "CheckBid": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $amount > $number($auction.highestBid.N) %}",
+                  "Next": "ReadUser"
+                }
+              ],
+              "Default": "InvalidBid"
+            },
+            "InvalidBid": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "invalid_bid",
+                "message": "Bid must strictly exceed the current highest bid",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "PlanTransaction": {
+              "Type": "Pass",
+              "Assign": {
+                "response": {
+                  "accepted": true,
+                  "auctionId": "{% $aid %}",
+                  "userId": "{% $uid %}",
+                  "bidAmt": "{% $amount %}",
+                  "requestId": "{% $rid %}",
+                  "message": "Bid accepted",
+                  "notification": "queued"
+                },
+                "token": "{% $uuid() %}",
+                "eventPayload": "{% $string({'eventId':$requestKey,'type':'NewHighestBid','auctionId':$aid,'userId':$uid,'bidAmt':$amount,'date':$createdAt}) %}"
+              },
+              "Next": "Commit"
+            },
+            "Commit": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:transactWriteItems",
+              "Arguments": {
+                "ClientRequestToken": "{% $token %}",
+                "TransactItems": [
+                  {
+                    "Update": {
+                      "TableName": "${AuctionsTable}",
+                      "Key": {
+                        "auctionId": {
+                          "S": "{% $aid %}"
+                        }
+                      },
+                      "ExpressionAttributeValues": {
+                        ":open": {
+                          "S": "OPEN"
+                        },
+                        ":version": {
+                          "N": "{% $auction.version.N %}"
+                        },
+                        ":one": {
+                          "N": "1"
+                        },
+                        ":amount": {
+                          "N": "{% $formatNumber($amount,'0.00') %}"
+                        },
+                        ":uid": {
+                          "S": "{% $uid %}"
+                        }
+                      },
+                      "ConditionExpression": "auctionStatus = :open AND version = :version AND highestBid < :amount",
+                      "UpdateExpression": "SET version = version + :one, highestBid = :amount, highestBidUserId = :uid"
+                    }
+                  },
+                  {
+                    "ConditionCheck": {
+                      "TableName": "${UsersTable}",
+                      "Key": {
+                        "userId": {
+                          "S": "{% $uid %}"
+                        }
+                      },
+                      "ConditionExpression": "attribute_exists(userId) AND acctBalance >= :amount",
+                      "ExpressionAttributeValues": {
+                        ":amount": {
+                          "N": "{% $formatNumber($amount,'0.00') %}"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "Put": {
+                      "TableName": "${RequestsTable}",
+                      "ConditionExpression": "attribute_not_exists(requestKey)",
+                      "Item": {
+                        "requestKey": {
+                          "S": "{% $requestKey %}"
+                        },
+                        "fingerprint": {
+                          "S": "{% $fingerprint %}"
+                        },
+                        "response": {
+                          "S": "{% $string($response) %}"
+                        },
+                        "createdAt": {
+                          "S": "{% $createdAt %}"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "Put": {
+                      "TableName": "${BidsTable}",
+                      "ConditionExpression": "attribute_not_exists(auctionId)",
+                      "Item": {
+                        "auctionId": {
+                          "S": "{% $aid %}"
+                        },
+                        "bidAmt": {
+                          "N": "{% $formatNumber($amount,'0.00') %}"
+                        },
+                        "userId": {
+                          "S": "{% $uid %}"
+                        },
+                        "date": {
+                          "S": "{% $createdAt %}"
+                        },
+                        "requestId": {
+                          "S": "{% $rid %}"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "Put": {
+                      "TableName": "${OutboxTable}",
+                      "ConditionExpression": "attribute_not_exists(eventId)",
+                      "Item": {
+                        "eventId": {
+                          "S": "{% $requestKey %}"
+                        },
+                        "payload": {
+                          "S": "{% $eventPayload %}"
+                        },
+                        "deliveryStatus": {
+                          "S": "PENDING"
+                        },
+                        "createdAt": {
+                          "S": "{% $createdAt %}"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "Next": "PublishNotification",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Assign": {
+                    "attempt": "{% $attempt + 1 %}"
+                  },
+                  "Next": "WaitForConflict"
+                }
+              ]
+            },
+            "PublishNotification": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Arguments": {
+                "TopicArn": "${HighBidTopicArn}",
+                "Message": "{% $eventPayload %}"
+              },
+              "Next": "MarkSent",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "ReturnSuccess"
+                }
+              ]
+            },
+            "MarkSent": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+              "Arguments": {
+                "TableName": "${OutboxTable}",
+                "Key": {
+                  "eventId": {
+                    "S": "{% $requestKey %}"
+                  }
+                },
+                "UpdateExpression": "SET deliveryStatus = :sent",
+                "ConditionExpression": "deliveryStatus = :pending",
+                "ExpressionAttributeValues": {
+                  ":sent": {
+                    "S": "SENT"
+                  },
+                  ":pending": {
+                    "S": "PENDING"
+                  }
+                }
+              },
+              "Next": "ReturnSuccess",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "ReturnSuccess"
+                }
+              ]
+            }
+          }
+        },
+        "DefinitionSubstitutions": {
+          "UsersTable": {
+            "Ref": "UsersTable"
+          },
+          "AuctionsTable": {
+            "Ref": "AuctionsTable"
+          },
+          "BidsTable": {
+            "Ref": "BidsTable"
+          },
+          "RequestsTable": {
+            "Ref": "RequestsTable"
+          },
+          "OutboxTable": {
+            "Ref": "OutboxTable"
+          },
+          "HighBidTopicArn": {
+            "Ref": "HighBidTopic"
+          }
+        },
+        "LoggingConfiguration": {
+          "Level": "ALL",
+          "IncludeExecutionData": false,
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "BiddingLogs",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "CloseAuctionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/vendedlogs/states/${ProjectPrefix}-CloseAuction"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "CloseAuctionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-CloseAuctionRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:GetItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "UsersTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "AuctionsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "RequestsTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:UpdateItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "AuctionsTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "UsersTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:PutItem",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "RequestsTable",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogDelivery",
+                    "logs:GetLogDelivery",
+                    "logs:UpdateLogDelivery",
+                    "logs:DeleteLogDelivery",
+                    "logs:ListLogDeliveries",
+                    "logs:PutResourcePolicy",
+                    "logs:DescribeResourcePolicies",
+                    "logs:DescribeLogGroups"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "CloseAuction": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": {
+          "Fn::Sub": "${ProjectPrefix}-CloseAuction"
+        },
+        "StateMachineType": "EXPRESS",
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "CloseAuctionRole",
+            "Arn"
+          ]
+        },
+        "Definition": {
+          "Comment": "Stage C: schema v2, conditional transactions, durable success receipts; generated by scripts/build_workflows.py. Deploy as EXPRESS.",
+          "QueryLanguage": "JSONata",
+          "StartAt": "Validate",
+          "TimeoutSeconds": 25,
+          "States": {
+            "Validate": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% ($type($states.input.auctionId) = 'string' ? $exists($match($states.input.auctionId, /^[A-Za-z0-9_-]{1,64}$/)) : false) and ($exists($states.input.requestId) ? ($type($states.input.requestId) = 'string' ? $exists($match($states.input.requestId, /^[A-Za-z0-9_-]{1,128}$/)) : false) : true) %}",
+                  "Next": "Initialize"
+                }
+              ],
+              "Default": "InvalidInput"
+            },
+            "Initialize": {
+              "Type": "Pass",
+              "Assign": {
+                "aid": "{% $states.input.auctionId %}",
+                "rid": "{% $exists($states.input.requestId) ? $states.input.requestId : $states.context.Execution.Id %}",
+                "principal": "{% $exists($states.input._principal) ? $states.input._principal : '' %}",
+                "attempt": 0,
+                "createdAt": "{% $now() %}"
+              },
+              "Next": "MakeIdentity"
+            },
+            "MakeIdentity": {
+              "Type": "Pass",
+              "Assign": {
+                "requestKey": "{% 'CLOSE#' & ($principal != '' ? $principal & '#' : '') & $rid %}",
+                "fingerprint": "{% $string({'auctionId':$aid}) %}"
+              },
+              "Next": "ReadReceipt"
+            },
+            "ReadReceipt": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${RequestsTable}",
+                "Key": {
+                  "requestKey": {
+                    "S": "{% $requestKey %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "ReceiptExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "receipt": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "ReceiptExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($receipt.requestKey.S) %}",
+                  "Next": "MatchReceipt"
+                }
+              ],
+              "Default": "AttemptLimit"
+            },
+            "MatchReceipt": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $receipt.fingerprint.S = $fingerprint %}",
+                  "Next": "ReturnReceipt"
+                }
+              ],
+              "Default": "RequestConflict"
+            },
+            "ReturnReceipt": {
+              "Type": "Pass",
+              "End": true,
+              "Output": "{% $parse($receipt.response.S) %}"
+            },
+            "AttemptLimit": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $attempt >= 3 %}",
+                  "Next": "Unavailable"
+                }
+              ],
+              "Default": "ReadAuction"
+            },
+            "ReadAuction": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${AuctionsTable}",
+                "Key": {
+                  "auctionId": {
+                    "S": "{% $aid %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "AuctionExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "auction": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "AuctionExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($auction.auctionId.S) %}",
+                  "Next": "SchemaReady"
+                }
+              ],
+              "Default": "AuctionNotExist"
+            },
+            "SchemaReady": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $auction.schemaVersion.N = '2' and $exists($auction.version.N) and $exists($auction.highestBid.N) and $exists($auction.highestBidUserId.S) %}",
+                  "Next": "OwnerOnly"
+                }
+              ],
+              "Default": "MigrationRequired"
+            },
+            "AuctionOpen": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $auction.auctionStatus.S = 'OPEN' %}",
+                  "Next": "HasBid"
+                }
+              ],
+              "Default": "AuctionClosed"
+            },
+            "ReadUser": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+              "Arguments": {
+                "TableName": "${UsersTable}",
+                "Key": {
+                  "userId": {
+                    "S": "{% $uid %}"
+                  }
+                },
+                "ConsistentRead": true
+              },
+              "Next": "UserExists",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Next": "Unavailable"
+                }
+              ],
+              "Assign": {
+                "user": "{% $exists($states.result.Item) ? $states.result.Item : {} %}"
+              }
+            },
+            "UserExists": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $exists($user.userId.S) %}",
+                  "Next": "BalanceEnough"
+                }
+              ],
+              "Default": "InvalidUser"
+            },
+            "BalanceEnough": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $number($user.acctBalance.N) >= $amount %}",
+                  "Next": "PlanTransaction"
+                }
+              ],
+              "Default": "InsufficientFunds"
+            },
+            "WaitForConflict": {
+              "Type": "Wait",
+              "Seconds": 1,
+              "Next": "ReadReceipt"
+            },
+            "ReturnSuccess": {
+              "Type": "Pass",
+              "End": true,
+              "Output": "{% $response %}"
+            },
+            "InvalidInput": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "InvalidInput",
+                "message": "Valid auctionId, userId/bidAmt (for bids), and optional requestId are required",
+                "httpStatus": 400,
+                "retryable": false
+              }
+            },
+            "RequestConflict": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "IdempotencyConflict",
+                "message": "requestId was already committed with a different payload",
+                "httpStatus": 409,
+                "retryable": false
+              }
+            },
+            "MigrationRequired": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "MigrationRequired",
+                "message": "Auction requires an offline schema migration before writes are allowed",
+                "httpStatus": 409,
+                "retryable": false
+              }
+            },
+            "AuctionNotExist": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "AuctionNotExist",
+                "message": "Auction does not exist",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "AuctionClosed": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "AuctionClosed",
+                "message": "Auction is already closed",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "InvalidUser": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "invalid_user",
+                "message": "User does not exist",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "InsufficientFunds": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "insufficient_funds",
+                "message": "Insufficient funds",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "Unavailable": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "RetryableFailure",
+                "message": "Outcome may be unknown. Retry the identical request with the same requestId.",
+                "httpStatus": 503,
+                "retryable": true
+              }
+            },
+            "OwnerOnly": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $principal = '' or $auction.ownerId.S = $principal %}",
+                  "Next": "AuctionOpen"
+                }
+              ],
+              "Default": "Forbidden"
+            },
+            "Forbidden": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "Forbidden",
+                "message": "Only the auction creator can close this auction",
+                "httpStatus": 403,
+                "retryable": false
+              }
+            },
+            "HasBid": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $number($auction.highestBid.N) > 0 and $auction.highestBidUserId.S != '' %}",
+                  "Next": "ReserveMet"
+                }
+              ],
+              "Default": "BidNotExist"
+            },
+            "ReserveMet": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Condition": "{% $number($auction.highestBid.N) >= $number($auction.reserve.N) %}",
+                  "Next": "SelectWinner"
+                }
+              ],
+              "Default": "ReserveNotMet"
+            },
+            "SelectWinner": {
+              "Type": "Pass",
+              "Assign": {
+                "amount": "{% $number($auction.highestBid.N) %}",
+                "uid": "{% $auction.highestBidUserId.S %}"
+              },
+              "Next": "ReadUser"
+            },
+            "BidNotExist": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "BidNotExist",
+                "message": "No bids placed yet",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "ReserveNotMet": {
+              "Type": "Pass",
+              "End": true,
+              "Output": {
+                "accepted": false,
+                "reason": "ReserveNotMet",
+                "message": "Reserve not met",
+                "httpStatus": 200,
+                "retryable": false
+              }
+            },
+            "PlanTransaction": {
+              "Type": "Pass",
+              "Assign": {
+                "response": {
+                  "accepted": true,
+                  "auctionId": "{% $aid %}",
+                  "winningUserId": "{% $uid %}",
+                  "winningBid": "{% $amount %}",
+                  "requestId": "{% $rid %}",
+                  "message": "Auction closed"
+                },
+                "token": "{% $uuid() %}"
+              },
+              "Next": "Commit"
+            },
+            "Commit": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:dynamodb:transactWriteItems",
+              "Arguments": {
+                "ClientRequestToken": "{% $token %}",
+                "TransactItems": [
+                  {
+                    "Update": {
+                      "TableName": "${AuctionsTable}",
+                      "Key": {
+                        "auctionId": {
+                          "S": "{% $aid %}"
+                        }
+                      },
+                      "ExpressionAttributeValues": {
+                        ":open": {
+                          "S": "OPEN"
+                        },
+                        ":version": {
+                          "N": "{% $auction.version.N %}"
+                        },
+                        ":one": {
+                          "N": "1"
+                        },
+                        ":amount": {
+                          "N": "{% $formatNumber($amount,'0.00') %}"
+                        },
+                        ":uid": {
+                          "S": "{% $uid %}"
+                        },
+                        ":closed": {
+                          "S": "CLOSED"
+                        },
+                        ":result": {
+                          "S": "{% $string($response) %}"
+                        }
+                      },
+                      "ConditionExpression": "auctionStatus = :open AND version = :version AND highestBid = :amount AND highestBidUserId = :uid AND reserve <= :amount",
+                      "UpdateExpression": "SET version = version + :one, auctionStatus = :closed, winningUserId = :uid, winningBid = :amount, closeResult = :result"
+                    }
+                  },
+                  {
+                    "Update": {
+                      "TableName": "${UsersTable}",
+                      "Key": {
+                        "userId": {
+                          "S": "{% $uid %}"
+                        }
+                      },
+                      "ConditionExpression": "attribute_exists(userId) AND acctBalance >= :amount",
+                      "UpdateExpression": "SET acctBalance = acctBalance - :amount",
+                      "ExpressionAttributeValues": {
+                        ":amount": {
+                          "N": "{% $formatNumber($amount,'0.00') %}"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "Put": {
+                      "TableName": "${RequestsTable}",
+                      "ConditionExpression": "attribute_not_exists(requestKey)",
+                      "Item": {
+                        "requestKey": {
+                          "S": "{% $requestKey %}"
+                        },
+                        "fingerprint": {
+                          "S": "{% $fingerprint %}"
+                        },
+                        "response": {
+                          "S": "{% $string($response) %}"
+                        },
+                        "createdAt": {
+                          "S": "{% $createdAt %}"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "Next": "ReturnSuccess",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Assign": {
+                    "attempt": "{% $attempt + 1 %}"
+                  },
+                  "Next": "WaitForConflict"
+                }
+              ]
+            }
+          }
+        },
+        "DefinitionSubstitutions": {
+          "UsersTable": {
+            "Ref": "UsersTable"
+          },
+          "AuctionsTable": {
+            "Ref": "AuctionsTable"
+          },
+          "BidsTable": {
+            "Ref": "BidsTable"
+          },
+          "RequestsTable": {
+            "Ref": "RequestsTable"
+          },
+          "OutboxTable": {
+            "Ref": "OutboxTable"
+          },
+          "HighBidTopicArn": {
+            "Ref": "HighBidTopic"
+          }
+        },
+        "LoggingConfiguration": {
+          "Level": "ALL",
+          "IncludeExecutionData": false,
+          "Destinations": [
+            {
+              "CloudWatchLogsLogGroup": {
+                "LogGroupArn": {
+                  "Fn::GetAtt": [
+                    "CloseAuctionLogs",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ReplaySchedule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectPrefix}-outbox-replay"
+        },
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Id": "Replay",
+            "Arn": {
+              "Fn::GetAtt": [
+                "Replay",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ReplayPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Replay"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "ReplaySchedule",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "ReplayAsync": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Replay"
+        },
+        "Qualifier": "$LATEST",
+        "MaximumRetryAttempts": 2,
+        "MaximumEventAgeInSeconds": 3600,
+        "DestinationConfig": {
+          "OnFailure": {
+            "Destination": {
+              "Fn::GetAtt": [
+                "ReplayDlq",
+                "Arn"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ApiStatesRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${ProjectPrefix}-ApiStatesRole"
+        },
+        "Path": {
+          "Fn::Sub": "/${ProjectPrefix}/"
+        },
+        "PermissionsBoundary": {
+          "Ref": "RuntimeBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "Application",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "states:StartSyncExecution",
+                  "Resource": [
+                    {
+                      "Ref": "Bidding"
+                    },
+                    {
+                      "Ref": "CloseAuction"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "UserGetAllPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "UserGetAll"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/user"
+        }
+      }
+    },
+    "UserCreatePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "UserCreate"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/POST/user"
+        }
+      }
+    },
+    "AuctionGetAllPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AuctionGetAll"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/auction"
+        }
+      }
+    },
+    "AuctionCreatePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AuctionCreate"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/POST/auction"
+        }
+      }
+    },
+    "AuctionGetOnePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AuctionGetOne"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/auction/*"
+        }
+      }
+    },
+    "BidGetPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "BidGet"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/bid"
+        }
+      }
+    },
+    "RestApi": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectPrefix}-api"
+        },
+        "EndpointConfiguration": {
+          "Types": [
+            "REGIONAL"
+          ]
+        },
+        "Body": {
+          "swagger": "2.0",
+          "info": {
+            "title": "Auction schema v2",
+            "version": "2"
+          },
+          "schemes": [
+            "https"
+          ],
+          "paths": {
+            "/user": {
+              "get": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UserGetAll.Arn}/invocations"
+                  }
+                }
+              },
+              "post": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UserCreate.Arn}/invocations"
+                  }
+                }
+              },
+              "options": {
+                "responses": {
+                  "200": {
+                    "description": "CORS",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Headers": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Methods": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "mock",
+                  "requestTemplates": {
+                    "application/json": "{\"statusCode\":200}"
+                  },
+                  "responses": {
+                    "default": {
+                      "statusCode": "200",
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        },
+                        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/auction": {
+              "get": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuctionGetAll.Arn}/invocations"
+                  }
+                }
+              },
+              "post": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuctionCreate.Arn}/invocations"
+                  }
+                }
+              },
+              "put": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "400": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "403": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "404": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "409": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "503": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:states:action/StartSyncExecution"
+                  },
+                  "credentials": {
+                    "Fn::GetAtt": [
+                      "ApiStatesRole",
+                      "Arn"
+                    ]
+                  },
+                  "passthroughBehavior": "NEVER",
+                  "timeoutInMillis": 29000,
+                  "requestTemplates": {
+                    "application/json": "#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll(\"\\\\'\",\"'\"))\n#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll(\"\\\\'\",\"'\"))\n#set($uid = $context.authorizer.claims.sub)\n#set($payload = \"{\\\"auctionId\\\":\\\"$aid\\\",\\\"requestId\\\":\\\"$rid\\\",\\\"_principal\\\":\\\"$uid\\\"}\")\n{\n  \"stateMachineArn\": \"$stageVariables.CloseAuctionStateMachineArn\",\n  \"input\": \"$util.escapeJavaScript($payload).replaceAll(\"\\\\'\",\"'\")\"\n}\n"
+                  },
+                  "responses": {
+                    "2\\d{2}": {
+                      "statusCode": "200",
+                      "responseTemplates": {
+                        "application/json": "#set($envelope = $util.parseJson($input.body))\n#if($envelope.status == \"SUCCEEDED\")\n  #set($result = $util.parseJson($envelope.output))\n  #if($result.httpStatus)\n    #set($context.responseOverride.status = $result.httpStatus)\n  #end\n  $envelope.output\n#else\n  #set($context.responseOverride.status = 503)\n  {\"accepted\":false,\"reason\":\"RetryableFailure\",\"retryable\":true,\"message\":\"Outcome may be unknown. Retry the identical request with the same requestId.\"}\n#end\n"
+                      },
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        }
+                      }
+                    },
+                    "default": {
+                      "statusCode": "503",
+                      "responseTemplates": {
+                        "application/json": "{\"accepted\":false,\"retryable\":true,\"message\":\"Outcome may be unknown. Retry with the same requestId.\"}"
+                      },
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "options": {
+                "responses": {
+                  "200": {
+                    "description": "CORS",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Headers": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Methods": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "mock",
+                  "requestTemplates": {
+                    "application/json": "{\"statusCode\":200}"
+                  },
+                  "responses": {
+                    "default": {
+                      "statusCode": "200",
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        },
+                        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/auction/{auctionId}": {
+              "get": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "parameters": [
+                  {
+                    "name": "auctionId",
+                    "in": "path",
+                    "required": true,
+                    "type": "string"
+                  }
+                ],
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuctionGetOne.Arn}/invocations"
+                  }
+                }
+              },
+              "options": {
+                "responses": {
+                  "200": {
+                    "description": "CORS",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Headers": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Methods": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "mock",
+                  "requestTemplates": {
+                    "application/json": "{\"statusCode\":200}"
+                  },
+                  "responses": {
+                    "default": {
+                      "statusCode": "200",
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        },
+                        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/bid": {
+              "get": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Success"
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws_proxy",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BidGet.Arn}/invocations"
+                  }
+                }
+              },
+              "post": {
+                "security": [
+                  {
+                    "Cognito": []
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "400": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "403": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "404": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "409": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "503": {
+                    "description": "Application response",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "aws",
+                  "httpMethod": "POST",
+                  "uri": {
+                    "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:states:action/StartSyncExecution"
+                  },
+                  "credentials": {
+                    "Fn::GetAtt": [
+                      "ApiStatesRole",
+                      "Arn"
+                    ]
+                  },
+                  "passthroughBehavior": "NEVER",
+                  "timeoutInMillis": 29000,
+                  "requestTemplates": {
+                    "application/json": "#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll(\"\\\\'\",\"'\"))\n#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll(\"\\\\'\",\"'\"))\n#set($uid = $context.authorizer.claims.sub)\n#set($payload = \"{\\\"auctionId\\\":\\\"$aid\\\",\\\"requestId\\\":\\\"$rid\\\",\\\"_principal\\\":\\\"$uid\\\",\\\"userId\\\":\\\"$uid\\\",\\\"bidAmt\\\":$input.json('$.bidAmt')}\")\n{\n  \"stateMachineArn\": \"$stageVariables.BiddingStateMachineArn\",\n  \"input\": \"$util.escapeJavaScript($payload).replaceAll(\"\\\\'\",\"'\")\"\n}\n"
+                  },
+                  "responses": {
+                    "2\\d{2}": {
+                      "statusCode": "200",
+                      "responseTemplates": {
+                        "application/json": "#set($envelope = $util.parseJson($input.body))\n#if($envelope.status == \"SUCCEEDED\")\n  #set($result = $util.parseJson($envelope.output))\n  #if($result.httpStatus)\n    #set($context.responseOverride.status = $result.httpStatus)\n  #end\n  $envelope.output\n#else\n  #set($context.responseOverride.status = 503)\n  {\"accepted\":false,\"reason\":\"RetryableFailure\",\"retryable\":true,\"message\":\"Outcome may be unknown. Retry the identical request with the same requestId.\"}\n#end\n"
+                      },
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        }
+                      }
+                    },
+                    "default": {
+                      "statusCode": "503",
+                      "responseTemplates": {
+                        "application/json": "{\"accepted\":false,\"retryable\":true,\"message\":\"Outcome may be unknown. Retry with the same requestId.\"}"
+                      },
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "options": {
+                "responses": {
+                  "200": {
+                    "description": "CORS",
+                    "headers": {
+                      "Access-Control-Allow-Origin": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Headers": {
+                        "type": "string"
+                      },
+                      "Access-Control-Allow-Methods": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-integration": {
+                  "type": "mock",
+                  "requestTemplates": {
+                    "application/json": "{\"statusCode\":200}"
+                  },
+                  "responses": {
+                    "default": {
+                      "statusCode": "200",
+                      "responseParameters": {
+                        "method.response.header.Access-Control-Allow-Origin": {
+                          "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                        },
+                        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "securityDefinitions": {
+            "Cognito": {
+              "type": "apiKey",
+              "name": "Authorization",
+              "in": "header",
+              "x-amazon-apigateway-authtype": "cognito_user_pools",
+              "x-amazon-apigateway-authorizer": {
+                "type": "cognito_user_pools",
+                "providerARNs": [
+                  {
+                    "Fn::GetAtt": [
+                      "UserPool",
+                      "Arn"
+                    ]
+                  }
+                ],
+                "identityValidationExpression": {
+                  "Fn::Sub": "^${UserPoolClient}$"
+                }
+              }
+            }
+          },
+          "x-amazon-apigateway-policy": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": "execute-api:Invoke",
+                "Resource": "execute-api:/*",
+                "Principal": "*"
+              },
+              {
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "execute-api:Invoke",
+                "Resource": "execute-api:/*",
+                "Condition": {
+                  "NotIpAddress": {
+                    "aws:SourceIp": {
+                      "Ref": "AllowedApiCidr"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "x-amazon-apigateway-gateway-responses": {
+            "DEFAULT_4XX": {
+              "responseParameters": {
+                "gatewayresponse.header.Access-Control-Allow-Origin": {
+                  "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                },
+                "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                "gatewayresponse.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+              }
+            },
+            "DEFAULT_5XX": {
+              "responseParameters": {
+                "gatewayresponse.header.Access-Control-Allow-Origin": {
+                  "Fn::Sub": "'https://${WebDistribution.DomainName}'"
+                },
+                "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+                "gatewayresponse.header.Access-Control-Allow-Methods": "'GET,POST,PUT,OPTIONS'"
+              }
+            }
+          }
+        },
+        "FailOnWarnings": true,
+        "Mode": "overwrite"
+      }
+    },
+    "ApiDeployment5ea2d4fa357a": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "RestApi"
+        }
+      }
+    },
+    "ApiLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/auction/${ProjectPrefix}/api"
+        },
+        "RetentionInDays": 14
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ApiStage": {
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "RestApi"
+        },
+        "DeploymentId": {
+          "Ref": "ApiDeployment5ea2d4fa357a"
+        },
+        "StageName": "dev",
+        "Variables": {
+          "BiddingStateMachineArn": {
+            "Ref": "Bidding"
+          },
+          "CloseAuctionStateMachineArn": {
+            "Ref": "CloseAuction"
+          }
+        },
+        "MethodSettings": [
+          {
+            "ResourcePath": "/*",
+            "HttpMethod": "*",
+            "DataTraceEnabled": false,
+            "LoggingLevel": "ERROR",
+            "ThrottlingBurstLimit": 10,
+            "ThrottlingRateLimit": 5
+          }
+        ],
+        "AccessLogSetting": {
+          "DestinationArn": {
+            "Fn::GetAtt": [
+              "ApiLogs",
+              "Arn"
+            ]
+          },
+          "Format": "{\"requestId\":\"$context.requestId\",\"status\":\"$context.status\",\"method\":\"$context.httpMethod\",\"path\":\"$context.resourcePath\",\"latency\":\"$context.responseLatency\"}"
+        }
+      }
+    },
+    "OutboxFailuresFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "ReplayLogs"
+        },
+        "FilterPattern": "{ $.event = \"outbox_summary\" }",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Ref": "ProjectPrefix"
+            },
+            "MetricName": "OutboxFailures",
+            "MetricValue": "$.failed",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "OutboxFailures": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-OutboxFailures"
+        },
+        "Namespace": {
+          "Ref": "ProjectPrefix"
+        },
+        "MetricName": "OutboxFailures",
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "OutboxOldestAgeFilter": {
+      "Type": "AWS::Logs::MetricFilter",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "ReplayLogs"
+        },
+        "FilterPattern": "{ $.event = \"outbox_summary\" }",
+        "MetricTransformations": [
+          {
+            "MetricNamespace": {
+              "Ref": "ProjectPrefix"
+            },
+            "MetricName": "OutboxOldestAge",
+            "MetricValue": "$.oldestPendingAgeSeconds",
+            "DefaultValue": 0
+          }
+        ]
+      }
+    },
+    "OutboxOldestAge": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-OutboxOldestAge"
+        },
+        "Namespace": {
+          "Ref": "ProjectPrefix"
+        },
+        "MetricName": "OutboxOldestAge",
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 900,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "ReplayErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-ReplayErrors"
+        },
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "Replay"
+            }
+          }
+        ]
+      }
+    },
+    "ReplayThrottles": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-ReplayThrottles"
+        },
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Throttles",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "Replay"
+            }
+          }
+        ]
+      }
+    },
+    "ReplayDeliveryFailed": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-ReplayDeliveryFailed"
+        },
+        "Namespace": "AWS/Events",
+        "MetricName": "FailedInvocations",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "RuleName",
+            "Value": {
+              "Ref": "ReplaySchedule"
+            }
+          }
+        ]
+      }
+    },
+    "NotificationDlqAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-NotificationDlqAlarm"
+        },
+        "Namespace": "AWS/SQS",
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::GetAtt": [
+                "NotificationDlq",
+                "QueueName"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ReplayDlqAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-ReplayDlqAlarm"
+        },
+        "Namespace": "AWS/SQS",
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::GetAtt": [
+                "ReplayDlq",
+                "QueueName"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BiddingExecutionsFailed": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-BiddingExecutionsFailed"
+        },
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsFailed",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": {
+              "Ref": "Bidding"
+            }
+          }
+        ]
+      }
+    },
+    "BiddingExecutionsTimedOut": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-BiddingExecutionsTimedOut"
+        },
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsTimedOut",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": {
+              "Ref": "Bidding"
+            }
+          }
+        ]
+      }
+    },
+    "CloseAuctionExecutionsFailed": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-CloseAuctionExecutionsFailed"
+        },
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsFailed",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": {
+              "Ref": "CloseAuction"
+            }
+          }
+        ]
+      }
+    },
+    "CloseAuctionExecutionsTimedOut": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-CloseAuctionExecutionsTimedOut"
+        },
+        "Namespace": "AWS/States",
+        "MetricName": "ExecutionsTimedOut",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "StateMachineArn",
+            "Value": {
+              "Ref": "CloseAuction"
+            }
+          }
+        ]
+      }
+    },
+    "ApiServerErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${ProjectPrefix}-ApiServerErrors"
+        },
+        "Namespace": "AWS/ApiGateway",
+        "MetricName": "5XXError",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 2,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ],
+        "Dimensions": [
+          {
+            "Name": "ApiName",
+            "Value": {
+              "Fn::Sub": "${ProjectPrefix}-api"
+            }
+          },
+          {
+            "Name": "Stage",
+            "Value": "dev"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "UsersTable": {
+      "Value": {
+        "Ref": "UsersTable"
+      }
+    },
+    "AuctionsTable": {
+      "Value": {
+        "Ref": "AuctionsTable"
+      }
+    },
+    "BidsTable": {
+      "Value": {
+        "Ref": "BidsTable"
+      }
+    },
+    "RequestsTable": {
+      "Value": {
+        "Ref": "RequestsTable"
+      }
+    },
+    "OutboxTable": {
+      "Value": {
+        "Ref": "OutboxTable"
+      }
+    },
+    "UserPoolId": {
+      "Value": {
+        "Ref": "UserPool"
+      }
+    },
+    "UserPoolClientId": {
+      "Value": {
+        "Ref": "UserPoolClient"
+      }
+    },
+    "CognitoAuthority": {
+      "Value": {
+        "Fn::Sub": "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+      }
+    },
+    "CognitoDomain": {
+      "Value": {
+        "Fn::Sub": "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+      }
+    },
+    "BiddingArn": {
+      "Value": {
+        "Ref": "Bidding"
+      }
+    },
+    "CloseAuctionArn": {
+      "Value": {
+        "Ref": "CloseAuction"
+      }
+    },
+    "ApiBaseUrl": {
+      "Value": {
+        "Fn::Sub": "https://${RestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/dev"
+      }
+    },
+    "WebUrl": {
+      "Value": {
+        "Fn::Sub": "https://${WebDistribution.DomainName}"
+      }
+    },
+    "WebBucket": {
+      "Value": {
+        "Ref": "WebBucket"
+      }
+    },
+    "DistributionId": {
+      "Value": {
+        "Ref": "WebDistribution"
+      }
+    },
+    "NotificationQueueUrl": {
+      "Value": {
+        "Ref": "Notifications"
+      }
+    },
+    "ReplayFunction": {
+      "Value": {
+        "Ref": "Replay"
+      }
+    },
+    "AlertsTopicArn": {
+      "Value": {
+        "Ref": "Alerts"
+      }
+    }
+  },
+  "Conditions": {
+    "EmailAlerts": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlertEmail"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "Pitr": {
+      "Fn::Equals": [
+        {
+          "Ref": "PointInTimeRecovery"
+        },
+        "true"
+      ]
+    },
+    "ReserveConcurrency": {
+      "Fn::Equals": [
+        {
+          "Ref": "ReserveLambdaConcurrency"
+        },
+        "true"
+      ]
+    }
+  }
+}

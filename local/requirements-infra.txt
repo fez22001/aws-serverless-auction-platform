@@ -1,0 +1,2 @@
+# Keep in a separate environment: cfn-lint has its own boto3 dependency range.
+cfn-lint==1.40.2

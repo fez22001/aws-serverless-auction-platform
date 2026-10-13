@@ -1,0 +1,140 @@
+name: Auction reviewed deployment
+# Configure the dev environment with required reviewers and main-only deployment
+# branches before setting AWS_ROLE_ARN. Bootstrap is operator-managed, never run here.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [plan, apply, publish-web]
+        default: plan
+        required: true
+      plan_run_id:
+        description: Successful plan workflow run ID (apply only)
+        type: string
+      reviewed_digest:
+        description: SHA-256 shown in the reviewed plan (apply only)
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: auction-dev-deployment
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    env:
+      OPERATION: ${{ inputs.operation }}
+      PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+      REVIEWED_DIGEST: ${{ inputs.reviewed_digest }}
+      EXPECTED_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
+      ALLOWED_API_CIDR: ${{ vars.ALLOWED_API_CIDR }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: bash scripts/setup-local.sh
+      - name: Run offline checks before AWS credentials are available
+        run: |
+          python3 -m venv .tools/infra-venv
+          .tools/infra-venv/bin/pip install -r local/requirements-infra.txt
+          python3 scripts/build_infra.py --check
+          .tools/infra-venv/bin/cfn-lint infra/bootstrap.json infra/application.json
+          .venv/bin/python -m pytest
+          bash scripts/npm.sh run lint
+          bash scripts/npm.sh run build
+      - name: Prepare non-secret deployment configuration
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          c=json.loads(Path('infra/deploy.example.json').read_text())
+          c.update(expected_account_id=os.environ['EXPECTED_ACCOUNT_ID'],profile='',
+                   project_prefix=os.environ['PROJECT_PREFIX'] or 'auction-dev',
+                   allowed_api_cidr=os.environ['ALLOWED_API_CIDR'] or '0.0.0.0/0',alert_email=os.environ['ALERT_EMAIL'],
+                   reserve_lambda_concurrency=False)
+          Path('infra/deploy.local.json').write_text(json.dumps(c))
+          PY
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: auction-${{ github.run_id }}
+      - name: Build and create application change set (no execution)
+        if: inputs.operation == 'plan'
+        run: |
+          release_dir="$(python3 scripts/release.py build)"
+          .venv/bin/python scripts/release.py plan-app --release "$release_dir" --out .local/plan.json > .local/plan.log
+          .venv/bin/python scripts/ci_plan.py upload --reference .local/plan-reference.json --plan .local/plan.json
+      - name: Verify the reviewed run belongs to this workflow and commit
+        if: inputs.operation == 'apply'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" > .local/reviewed-run.json
+          python3 - <<'PY'
+          import json, os
+          r=json.load(open('.local/reviewed-run.json'))
+          assert r['conclusion']=='success' and r['head_branch']=='main'
+          assert r['head_sha']==os.environ['GITHUB_SHA'], 'Review a fresh plan for this commit'
+          assert r['path']=='.github/workflows/hw10-deploy.yml'
+          PY
+      - name: Download plan from the explicitly reviewed run
+        if: inputs.operation == 'apply'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: auction-plan
+          path: .local/reviewed
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
+      - name: Execute exact reviewed AWS change set
+        if: inputs.operation == 'apply'
+        run: |
+          test -n "$PLAN_RUN_ID"
+          test -n "$REVIEWED_DIGEST"
+          .venv/bin/python scripts/ci_plan.py download --reference .local/reviewed/plan-reference.json --plan .local/reviewed/plan.json
+          .venv/bin/python scripts/release.py apply --plan .local/reviewed/plan.json --reviewed-digest "$REVIEWED_DIGEST"
+          .venv/bin/python scripts/release.py wait-app
+          .venv/bin/python scripts/release.py status
+      - name: Publish frontend to a completed application stack
+        if: inputs.operation == 'publish-web'
+        run: .venv/bin/python scripts/release.py publish-web --out .local/web-receipt.json
+      - name: Summarize reviewed plan
+        if: inputs.operation == 'plan'
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          p=json.load(open('.local/plan.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
+              out.write('Review digest: `'+p['review_digest']+'`\n\n')
+              out.write('| Action | Resource | Replacement |\n|---|---|---|\n')
+              for change in p['review']['Changes']:
+                  r=change['ResourceChange']
+                  out.write('| '+r['Action']+' | '+r['LogicalResourceId']+' | '+r.get('Replacement','')+' |\n')
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.operation == 'plan'
+        with:
+          name: auction-plan
+          path: .local/plan-reference.json
+          include-hidden-files: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && inputs.operation == 'publish-web'
+        with:
+          name: web-publication-receipt
+          path: .local/web-receipt.json
+          include-hidden-files: true

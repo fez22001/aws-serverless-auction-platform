@@ -1,0 +1,11 @@
+#set($envelope = $util.parseJson($input.body))
+#if($envelope.status == "SUCCEEDED")
+  #set($result = $util.parseJson($envelope.output))
+  #if($result.httpStatus)
+    #set($context.responseOverride.status = $result.httpStatus)
+  #end
+  $envelope.output
+#else
+  #set($context.responseOverride.status = 503)
+  {"accepted":false,"reason":"RetryableFailure","retryable":true,"message":"Outcome may be unknown. Retry the identical request with the same requestId."}
+#end
