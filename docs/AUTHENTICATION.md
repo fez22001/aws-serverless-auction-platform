@@ -15,3 +15,7 @@ Cognito sends a temporary password. The recipient opens the demo, selects Sign i
 The client also enables IAM-authorized ADMIN_USER_PASSWORD_AUTH solely for operator-run integration checks. It cannot be invoked with only the public client ID; the GitHub deployment role has no Cognito user-administration permissions.
 
 Legacy development records do not have owners or Cognito identities and are never adopted by newly invited users. Create a new profile and new auctions for the authenticated demo.
+
+## Cloud acceptance check
+
+After deployment, an operator can run `.venv/bin/python scripts/auth_smoke.py`. It creates two disposable identities with email delivery suppressed, checks anonymous access, forged identity/balance fields, owner-only close, idempotency and wrong-client tokens, then removes its test identities and keyed test records. It never prints or persists passwords or tokens. The operator identity, not GitHub Actions, runs these identity-administration checks.

@@ -3475,7 +3475,7 @@
                   "passthroughBehavior": "NEVER",
                   "timeoutInMillis": 29000,
                   "requestTemplates": {
-                    "application/json": "#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll(\"\\\\'\",\"'\"))\n#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll(\"\\\\'\",\"'\"))\n#set($uid = $context.authorizer.claims.sub)\n#set($payload = \"{\\\"auctionId\\\":\\\"$aid\\\",\\\"requestId\\\":\\\"$rid\\\",\\\"_principal\\\":\\\"$uid\\\"}\")\n{\n  \"stateMachineArn\": \"$stageVariables.CloseAuctionStateMachineArn\",\n  \"input\": \"$util.escapeJavaScript($payload).replaceAll(\"\\\\'\",\"'\")\"\n}\n"
+                    "application/json": "{\n  \"stateMachineArn\": \"$stageVariables.CloseAuctionStateMachineArn\",\n  \"input\": \"{\\\"auctionId\\\":$util.escapeJavaScript($input.json('$.auctionId')).replaceAll(\"\\\\'\",\"'\"),\\\"requestId\\\":$util.escapeJavaScript($input.json('$.requestId')).replaceAll(\"\\\\'\",\"'\"),\\\"_principal\\\":\\\"$context.authorizer.claims.sub\\\"}\"\n}\n"
                   },
                   "responses": {
                     "2\\d{2}": {
@@ -3696,7 +3696,7 @@
                   "passthroughBehavior": "NEVER",
                   "timeoutInMillis": 29000,
                   "requestTemplates": {
-                    "application/json": "#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll(\"\\\\'\",\"'\"))\n#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll(\"\\\\'\",\"'\"))\n#set($uid = $context.authorizer.claims.sub)\n#set($payload = \"{\\\"auctionId\\\":\\\"$aid\\\",\\\"requestId\\\":\\\"$rid\\\",\\\"_principal\\\":\\\"$uid\\\",\\\"userId\\\":\\\"$uid\\\",\\\"bidAmt\\\":$input.json('$.bidAmt')}\")\n{\n  \"stateMachineArn\": \"$stageVariables.BiddingStateMachineArn\",\n  \"input\": \"$util.escapeJavaScript($payload).replaceAll(\"\\\\'\",\"'\")\"\n}\n"
+                    "application/json": "{\n  \"stateMachineArn\": \"$stageVariables.BiddingStateMachineArn\",\n  \"input\": \"{\\\"auctionId\\\":$util.escapeJavaScript($input.json('$.auctionId')).replaceAll(\"\\\\'\",\"'\"),\\\"requestId\\\":$util.escapeJavaScript($input.json('$.requestId')).replaceAll(\"\\\\'\",\"'\"),\\\"_principal\\\":\\\"$context.authorizer.claims.sub\\\",\\\"userId\\\":\\\"$context.authorizer.claims.sub\\\",\\\"bidAmt\\\":$util.escapeJavaScript($input.json('$.bidAmt')).replaceAll(\"\\\\'\",\"'\")}\"\n}\n"
                   },
                   "responses": {
                     "2\\d{2}": {
@@ -3833,7 +3833,7 @@
         "Mode": "overwrite"
       }
     },
-    "ApiDeployment5ea2d4fa357a": {
+    "ApiDeploymente67cb7a8d521": {
       "Type": "AWS::ApiGateway::Deployment",
       "Properties": {
         "RestApiId": {
@@ -3859,7 +3859,7 @@
           "Ref": "RestApi"
         },
         "DeploymentId": {
-          "Ref": "ApiDeployment5ea2d4fa357a"
+          "Ref": "ApiDeploymente67cb7a8d521"
         },
         "StageName": "dev",
         "Variables": {

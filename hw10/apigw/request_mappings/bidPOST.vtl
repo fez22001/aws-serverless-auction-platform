@@ -1,8 +1,4 @@
-#set($aid = $util.escapeJavaScript($input.path('$.auctionId')).replaceAll("\\'","'"))
-#set($rid = $util.escapeJavaScript($input.path('$.requestId')).replaceAll("\\'","'"))
-#set($uid = $context.authorizer.claims.sub)
-#set($payload = "{\"auctionId\":\"$aid\",\"requestId\":\"$rid\",\"_principal\":\"$uid\",\"userId\":\"$uid\",\"bidAmt\":$input.json('$.bidAmt')}")
 {
   "stateMachineArn": "$stageVariables.BiddingStateMachineArn",
-  "input": "$util.escapeJavaScript($payload).replaceAll("\\'","'")"
+  "input": "{\"auctionId\":$util.escapeJavaScript($input.json('$.auctionId')).replaceAll("\\'","'"),\"requestId\":$util.escapeJavaScript($input.json('$.requestId')).replaceAll("\\'","'"),\"_principal\":\"$context.authorizer.claims.sub\",\"userId\":\"$context.authorizer.claims.sub\",\"bidAmt\":$util.escapeJavaScript($input.json('$.bidAmt')).replaceAll("\\'","'")}"
 }
